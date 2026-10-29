@@ -661,13 +661,32 @@
         .map(function (e) {
           return e.data.body.customerId;
         });
-      // 登出輪換後第一次寫回的新 token，和登出 resolve 的先後（O1：登出要晚於寫回）
+      // 登出輪換後第一次寫回的新 token，和登出 resolve 的先後（O1：登出要晚於寫回）。
+      // 寫回時間取 widget 送 notifySetCookie 的時間點（MA 在同一次事件派送中寫 cookie）；被延後注入的
+      // 取放行的時間，被丟掉的不算。cookie 輪詢每 50ms 才記一次，登出常在寫回後幾毫秒就結束，用它會誤判，
+      // 只在沒有 widget 事件時退回使用。
       var firstRotation = rotations[0];
-      var newTokenEv = firstRotation
+      var isNewToken = function (v) {
+        return v && v !== firstRotation.data.token;
+      };
+      var written = firstRotation
         ? inWindow.find(function (e) {
-            return e.type === 'cookie_token' && e.t >= firstRotation.t && e.data.to && e.data.to !== firstRotation.data.token;
+            if (e.t < firstRotation.t) {
+              return false;
+            }
+            if (e.type === 'widget_setToken') {
+              return e.data.injected === 0 && isNewToken(e.data.value);
+            }
+            return e.type === 'widget_setToken_released' && isNewToken(e.data.value);
           })
         : null;
+      var newTokenEv =
+        written ||
+        (firstRotation
+          ? inWindow.find(function (e) {
+              return e.type === 'cookie_token' && e.t >= firstRotation.t && isNewToken(e.data.to);
+            })
+          : null);
       var settled = end ? Date.now() >= end.t + FLOW_SETTLE_MS : false;
       var finalWidgetToken = settled ? tokenAt(end.t + FLOW_SETTLE_MS) : null;
       var result = end ? end.data.result : null;
