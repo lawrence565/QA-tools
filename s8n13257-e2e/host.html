@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh-Hant">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>S8N-13257 換帳號驗證頁</title>
+		<!-- probe 必須在 MA / LiveChat 的 launch.js 之前載入，才記得到頁面載入當下的 ecLogin -->
+		<script src="./probe.js"></script>
+		<style>
+			body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 16px; max-width: 980px; color: #1f2933; }
+			h1 { font-size: 20px; margin: 0 0 4px; }
+			.sub { color: #616e7c; margin: 0 0 16px; }
+			fieldset { border: 1px solid #cbd2d9; border-radius: 6px; margin: 0 0 12px; padding: 10px 12px; }
+			legend { font-weight: 600; padding: 0 4px; }
+			label { display: inline-block; margin: 4px 12px 4px 0; font-size: 13px; }
+			input { font: inherit; padding: 3px 6px; width: 190px; }
+			button { font: inherit; margin: 4px 6px 4px 0; padding: 6px 10px; border-radius: 4px; border: 1px solid #9aa5b1; background: #fff; cursor: pointer; }
+			button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+			button.warn { border-color: #d97706; color: #92400e; }
+			.verdict { font-size: 18px; font-weight: 700; }
+			.PASS { color: #15803d; } .FAIL { color: #b91c1c; } .PENDING, .NO_DATA { color: #92400e; }
+			pre { background: #f5f7fa; border: 1px solid #e4e7eb; border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; max-height: 420px; }
+			table { border-collapse: collapse; font-size: 12px; width: 100%; }
+			th, td { border: 1px solid #e4e7eb; padding: 4px 6px; text-align: left; vertical-align: top; }
+			.banner { background: #fef3c7; border: 1px solid #f59e0b; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; }
+		</style>
+	</head>
+	<body>
+		<h1>S8N-13257 換帳號驗證頁</h1>
+		<p class="sub">驗證 <code>ecLogin</code> 換帳號時，<code>/ec/customer/mapping</code> 帶的是新的 LiveChat 身份。只連 staging。</p>
+		<div id="banner" class="banner" hidden></div>
+
+		<fieldset>
+			<legend>設定（存在本機 localStorage，換頁沿用）</legend>
+			<label>MA encryptedOrgId（GA4）<br /><input id="maOrg" data-testid="maOrg" /></label>
+			<label>LiveChat encryptedOrgId<br /><input id="lcOrg" data-testid="lcOrg" /></label><br />
+			<label>會員 A ID<br /><input id="aId" data-testid="aId" /></label>
+			<label>會員 A 名稱<br /><input id="aName" data-testid="aName" /></label><br />
+			<label>會員 B ID<br /><input id="bId" data-testid="bId" /></label>
+			<label>會員 B 名稱<br /><input id="bName" data-testid="bName" /></label><br />
+			<button id="save" data-testid="save">儲存並重新載入</button>
+		</fieldset>
+
+		<fieldset>
+			<legend>操作</legend>
+			<button class="primary" data-testid="loginA" data-action="loginA">登入 A</button>
+			<button class="primary" data-testid="loginB" data-action="loginB">登入 B</button>
+			<button data-testid="logout" data-action="logout">登出</button>
+			<button data-testid="customerFlow" data-action="customerFlow">客戶流程：登出 → 立刻換頁 → 登入 B</button>
+			<button data-testid="awaitLogoutLoginB" data-action="awaitLogoutLoginB">登出（await）→ 同頁登入 B</button>
+			<button data-testid="fireLogoutLoginB" data-action="fireLogoutLoginB">登出（不等）→ 同頁登入 B</button>
+			<button data-testid="rebuildIdentity" data-action="rebuildIdentity">widget 自行重建身份（階段 B）</button>
+			<button data-testid="clearEcCookie" data-action="clearEcCookie">只清 EC cookie（階段 C）</button>
+			<br />
+			<span>故障注入：</span>
+			<button data-testid="injectNone" data-action="injectNone">無</button>
+			<button class="warn" data-testid="injectDelay" data-action="injectDelay">token 延後 3 秒寫回</button>
+			<button class="warn" data-testid="injectDrop" data-action="injectDrop">token 不寫回（逾時）</button>
+			<button class="warn" data-testid="injectFail" data-action="injectFail">輪換拋錯（iframe 未就緒）</button>
+			<button class="warn" data-testid="injectCheckBindFail" data-action="injectCheckBindFail">checkBindStatus 網路錯誤（階段 C）</button>
+			<br />
+			<button data-testid="report" data-action="report">產生報告</button>
+			<button data-testid="export" data-action="export">下載證據 JSON</button>
+			<button data-testid="clear" data-action="clear">清除紀錄</button>
+			<button data-testid="resetIdentity" data-action="resetIdentity">清除身份 cookie（重新開始）</button>
+		</fieldset>
+
+		<fieldset>
+			<legend>狀態</legend>
+			<div>判定：<span id="verdict" class="verdict" data-testid="verdict">NO_DATA</span></div>
+			<div>MA 版本：<span id="build" data-testid="build">載入中…</span></div>
+			<div>目前身份：<span id="cookies" data-testid="cookies"></span></div>
+			<div>故障注入：<span id="inject" data-testid="inject"></span></div>
+			<div>最後一次操作：<span id="last" data-testid="last">（無）</span></div>
+		</fieldset>
+
+		<table id="rows" data-testid="rows"></table>
+		<!-- O1–O3：同頁「登出 → 登入 B」流程的判定，有跑過才顯示 -->
+		<table id="flows" data-testid="flows" hidden></table>
+		<pre id="out" data-testid="out"></pre>
+
+		<script>
+			(function () {
+				var STAGING = {
+					maLaunch: 'https://stage-marketing-automation.no8.io/launch.js',
+					lcLocation: 'https://stage-live-chat-console.no8.io',
+				};
+				var CFG_KEY = 's8n13257.config';
+				var fields = ['maOrg', 'lcOrg', 'aId', 'aName', 'bId', 'bName'];
+				var params = new URLSearchParams(location.search);
+				var cfg = {};
+				try {
+					cfg = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
+				} catch (e) {
+					cfg = {};
+				}
+				// URL 參數優先，方便 Cowork／Playwright 一次帶齊
+				fields.forEach(function (f) {
+					if (params.get(f)) {
+						cfg[f] = params.get(f);
+					}
+				});
+				cfg.aName = cfg.aName || 'S8N13257 會員A';
+				cfg.bName = cfg.bName || 'S8N13257 會員B';
+				try {
+					localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+				} catch (e) {
+					// 無痕模式等情況下只用 URL 參數
+				}
+				fields.forEach(function (f) {
+					document.getElementById(f).value = cfg[f] || '';
+				});
+
+				var banner = document.getElementById('banner');
+				var ready = cfg.maOrg && cfg.lcOrg && cfg.aId && cfg.bId;
+				if (!ready) {
+					banner.hidden = false;
+					banner.textContent = '請先填入 MA／LiveChat 的 encryptedOrgId 與兩個會員 ID，按「儲存並重新載入」。';
+				}
+
+				document.getElementById('save').onclick = function () {
+					fields.forEach(function (f) {
+						cfg[f] = document.getElementById(f).value.trim();
+					});
+					localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+					location.href = location.pathname;
+				};
+
+				function inject(src, id, beforeLoad) {
+					beforeLoad();
+					var s = document.createElement('script');
+					if (id) {
+						s.id = id;
+					}
+					s.src = src;
+					s.async = true;
+					document.head.appendChild(s);
+				}
+
+				if (ready) {
+					// 與正式嵌入碼相同：先設定全域 config，再載入 launch.js。
+					// LiveChat 的 initChatPlugin 用 id 為 eight-chat-script 的 script 標籤推出 widget 網址，
+					// 少了這個 id 會拋 TypeError、iframe 不會建立（正式嵌入碼見 super8-v2-console livechat/generateCode.js）
+					inject(STAGING.lcLocation + '/launch.js', 'eight-chat-script', function () {
+						window.eightChatConfig = { encryptedOrgId: cfg.lcOrg, env: 'staging', launchLocation: STAGING.lcLocation };
+					});
+					inject(STAGING.maLaunch, null, function () {
+						window.gaConfig = { env: 'staging', encryptedOrgId: cfg.maOrg };
+					});
+				}
+
+				var last = document.getElementById('last');
+				function show(label, value) {
+					last.textContent = label + ' → ' + JSON.stringify(value);
+					refresh();
+				}
+
+				function waitFor(name, timeoutMs) {
+					var start = Date.now();
+					return new Promise(function (resolve, reject) {
+						(function poll() {
+							var fn = window[name];
+							if (typeof fn === 'function' && fn.__s8n13257) {
+								return resolve(fn);
+							}
+							if (Date.now() - start > timeoutMs) {
+								return reject(new Error(name + ' 未在 ' + timeoutMs + 'ms 內載入'));
+							}
+							setTimeout(poll, 100);
+						})();
+					});
+				}
+
+				function login(which) {
+					var id = which === 'A' ? cfg.aId : cfg.bId;
+					var name = which === 'A' ? cfg.aName : cfg.bName;
+					last.textContent = '登入 ' + which + ' 執行中…';
+					return waitFor('ecLogin', 30000)
+						.then(function (fn) {
+							return fn(id, { name: name });
+						})
+						.then(function (r) {
+							show('登入 ' + which, r);
+							return r;
+						})
+						.catch(function (e) {
+							show('登入 ' + which + ' 失敗', String(e && e.message));
+						});
+				}
+
+				// O1–O3：同頁登出後登入 B。await 版等 ecLogout resolve 才呼叫 ecLogin；
+				// 不等版呼叫 ecLogout 後立刻 ecLogin（宿主沒有 await 的寫法）。流程起訖交給 probe 判定
+				function logoutLoginB(awaitLogout) {
+					var name = awaitLogout ? 'awaitLogoutLoginB' : 'fireLogoutLoginB';
+					var label = awaitLogout ? '登出（await）→ 同頁登入 B' : '登出（不等）→ 同頁登入 B';
+					last.textContent = label + ' 執行中…';
+					return Promise.all([waitFor('ecLogout', 30000), waitFor('ecLogin', 30000)])
+						.then(function (fns) {
+							var flow = S8N13257.flowStart(name, cfg.bId);
+							var loginB = function () {
+								return fns[1](cfg.bId, { name: cfg.bName });
+							};
+							var logout = Promise.resolve(fns[0]());
+							var run = awaitLogout ? logout.then(loginB) : (logout.catch(function () {}), loginB());
+							return run.then(
+								function (r) {
+									S8N13257.flowEnd(flow, r);
+									show(label, r);
+									return r;
+								},
+								function (e) {
+									S8N13257.flowEnd(flow, { threw: String(e && e.message) });
+									throw e;
+								}
+							);
+						})
+						.catch(function (e) {
+							show(label + ' 失敗', String(e && e.message));
+						});
+				}
+
+				var actions = {
+					loginA: function () {
+						return login('A');
+					},
+					loginB: function () {
+						return login('B');
+					},
+					logout: function () {
+						return waitFor('ecLogout', 30000).then(function (fn) {
+							return Promise.resolve(fn()).then(function (r) {
+								show('登出', r === undefined ? 'done' : r);
+							});
+						});
+					},
+					// 重現客戶網站：登入時先 ecLogout，結束後立刻換頁，新頁面載入就 ecLogin
+					customerFlow: function () {
+						return waitFor('ecLogout', 30000)
+							.then(function (fn) {
+								return Promise.resolve(fn()).catch(function () {});
+							})
+							.finally(function () {
+								location.assign(location.pathname + '?do=loginB');
+							});
+					},
+					awaitLogoutLoginB: function () {
+						return logoutLoginB(true);
+					},
+					fireLogoutLoginB: function () {
+						return logoutLoginB(false);
+					},
+					rebuildIdentity: function () {
+						S8N13257.rebuildIdentity();
+						show('widget 自行重建身份', 'createNewLivechatCustomer 已呼叫');
+						refresh();
+					},
+					clearEcCookie: function () {
+						S8N13257.clearEcCookie();
+						show('只清 EC cookie', 'gaOWCustomerId 已刪，livechat token 保留');
+						refresh();
+					},
+					injectCheckBindFail: function () {
+						S8N13257.inject({ failCheckBind: true });
+						refresh();
+					},
+					injectNone: function () {
+						S8N13257.inject({});
+						refresh();
+					},
+					injectDelay: function () {
+						S8N13257.inject({ delayTokenMs: 3000 });
+						refresh();
+					},
+					injectDrop: function () {
+						S8N13257.inject({ dropToken: true });
+						refresh();
+					},
+					injectFail: function () {
+						S8N13257.inject({ failRotation: true });
+						refresh();
+					},
+					report: function () {
+						var r = S8N13257.report();
+						document.getElementById('out').textContent = JSON.stringify(r, null, 2);
+						refresh();
+					},
+					export: function () {
+						S8N13257.exportJSON();
+					},
+					clear: function () {
+						S8N13257.clear();
+						document.getElementById('out').textContent = '';
+						refresh();
+					},
+					// 讓下一輪從「沒有任何身份」開始；widget 會在重新載入後發新的匿名身份
+					resetIdentity: function () {
+						['super8_customer_token', 'gaOWCustomerId', 'gaOWCustomerProfile'].forEach(function (n) {
+							document.cookie = n + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+						});
+						location.href = location.pathname;
+					},
+				};
+
+				document.querySelectorAll('[data-action]').forEach(function (b) {
+					b.addEventListener('click', function () {
+						actions[b.getAttribute('data-action')]();
+					});
+				});
+
+				function refresh() {
+					var a = S8N13257.analyze();
+					var v = document.getElementById('verdict');
+					v.textContent = a.overall;
+					v.className = 'verdict ' + a.overall;
+					var b = a.build;
+					var buildEl = document.getElementById('build');
+					buildEl.textContent = !b.maLoaded
+						? '尚未載入'
+						: b.hasIdentityWait && b.hasRotationFailed
+						? '已含 S8N-13257 修正' + (b.hasLogoutIdentityWait ? '（含 O1–O3）' : '（不含 O1–O3）')
+						: '未含 S8N-13257 修正（修正前版本）';
+					buildEl.setAttribute('data-o1o3', b.maLoaded ? String(Boolean(b.hasLogoutIdentityWait)) : '');
+					var c = S8N13257.cookies();
+					document.getElementById('cookies').textContent =
+						'livechat ' + S8N13257.mask(c.token) + '／EC 會員 ' + (c.ecCustomerId || '(未登入)');
+					document.getElementById('inject').textContent = JSON.stringify(a.inject);
+					var t = document.getElementById('rows');
+					t.innerHTML =
+						'<tr><th>#</th><th>ecLogin</th><th>輪換</th><th>舊 token</th><th>新 token</th><th>寫回 ms</th><th>mapping</th><th>結果</th><th>判定</th><th>說明</th></tr>';
+					a.rows.forEach(function (x) {
+						var tr = document.createElement('tr');
+						[
+							x.n,
+							x.ecCustomerId,
+							x.rotated ? (x.rotationThrew ? '拋錯' : '是') : '否',
+							S8N13257.mask(x.prevToken),
+							S8N13257.mask(x.newToken),
+							x.tokenWritebackMs,
+							x.mappingCustomerIds.map(S8N13257.mask).join(', '),
+							JSON.stringify(x.result),
+							x.verdict,
+							x.note,
+						].forEach(function (val) {
+							var td = document.createElement('td');
+							td.textContent = val === null || val === undefined ? '' : String(val);
+							tr.appendChild(td);
+						});
+						tr.setAttribute('data-verdict', x.verdict);
+						t.appendChild(tr);
+					});
+					renderFlows(a.logoutFlows || []);
+				}
+
+				function yesNo(v, yes, no) {
+					return v === null || v === undefined ? '' : v ? yes : no;
+				}
+
+				function renderFlows(flows) {
+					var t = document.getElementById('flows');
+					t.hidden = !flows.length;
+					t.innerHTML =
+						'<tr><th>同頁登出 → 登入 B</th><th>rotation_call 次數</th><th>B 的 mapping token</th><th>最終 widget token（結束 3 秒後）</th>' +
+						'<th>B 的 mapping token = 最終 widget token</th><th>登出呼叫當下 profile cookie</th><th>登出後 profile cookie</th>' +
+						'<th>登出晚於新 token 寫回</th><th>登出 ms</th><th>判定</th><th>說明</th></tr>';
+					flows.forEach(function (f) {
+						var tr = document.createElement('tr');
+						[
+							f.flow,
+							f.rotationCalls,
+							f.mappingTokens.map(S8N13257.mask).join(', '),
+							S8N13257.mask(f.finalWidgetToken),
+							yesNo(f.mappingMatchesFinal, '是', '否'),
+							yesNo(f.profileAfterLogoutCall, '存在', '不存在'),
+							yesNo(f.profileAfterLogout, '存在', '不存在'),
+							yesNo(f.logoutEndedAfterNewToken, '是', '否'),
+							f.logoutMs,
+							f.verdict,
+							f.note,
+						].forEach(function (val) {
+							var td = document.createElement('td');
+							td.textContent = val === null || val === undefined ? '' : String(val);
+							tr.appendChild(td);
+						});
+						tr.setAttribute('data-verdict', f.verdict);
+						tr.setAttribute('data-flow', f.flow);
+						t.appendChild(tr);
+					});
+				}
+
+				setInterval(refresh, 1000);
+				refresh();
+
+				// ?do=loginA / loginB：換頁後自動執行（客戶流程用）
+				var pending = params.get('do');
+				if (ready && pending && actions[pending]) {
+					history.replaceState(null, '', location.pathname);
+					actions[pending]();
+				}
+			})();
+		</script>
+	</body>
+</html>
