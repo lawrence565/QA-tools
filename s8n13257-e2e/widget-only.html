@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>S8N-13257 對照頁：只嵌 LiveChat</title>
+		<style>
+			body { font: 14px/1.6 system-ui, sans-serif; margin: 16px; color: #1f2933; background: #fff; }
+			code, pre { font: 12px ui-monospace, monospace; }
+			pre { background: #f5f7fa; padding: 8px; border-radius: 4px; max-height: 50vh; overflow: auto; }
+		</style>
+		<script>
+			// 對照實驗：這一頁只載入 staging LiveChat 的正式嵌入碼，不載 MA SDK、不載 probe。
+			// 預設附帶一段「唯讀」觀察：只讀 cookie、只記錄 widget 送給宿主的指令名稱，
+			// 不攔截、不改寫、不重新派送任何訊息。網址加 ?bare=1 連觀察也關掉。
+			(function () {
+				var bare = /[?&]bare=1\b/.test(location.search);
+				window.S8N13257_CONTROL = { bare: bare, events: [] };
+				if (bare) return;
+				var t0 = Date.now();
+				function readToken() {
+					var m = document.cookie.match(/(?:^|;\s*)super8_customer_token=([^;]*)/g) || [];
+					return m.map(function (s) { return s.split('=')[1]; });
+				}
+				function rec(type, data) {
+					window.S8N13257_CONTROL.events.push({ t: Date.now() - t0, type: type, data: data });
+				}
+				rec('page_load', { tokens: readToken() });
+				window.addEventListener('message', function (e) {
+					var d = e.data;
+					if (d && d.target === 'eightChat') rec('widget_msg', { command: d.command, name: d.options && d.options.name });
+				}, true);
+				var last = JSON.stringify(readToken());
+				setInterval(function () {
+					var now = JSON.stringify(readToken());
+					if (now !== last) { rec('cookie_token', { from: JSON.parse(last), to: JSON.parse(now) }); last = now; }
+				}, 50);
+			})();
+		</script>
+	</head>
+	<body>
+		<h1>S8N-13257 對照頁：只嵌 LiveChat（staging）</h1>
+		<p>不載 MA SDK、不載 probe。用來確認一般訪客重新載入時，widget 是否沿用 cookie 裡的 <code>super8_customer_token</code>。</p>
+		<p>觀察資料在 <code>window.S8N13257_CONTROL.events</code>（加 <code>?bare=1</code> 時不記錄）。</p>
+		<pre id="out"></pre>
+		<script>
+			window.eightChatConfig = { encryptedOrgId: '24e@@SwmgmzA1VQ==', env: 'staging', launchLocation: 'https://stage-live-chat-console.no8.io' };
+		</script>
+		<script id="eight-chat-script" src="https://stage-live-chat-console.no8.io/launch.js" async></script>
+		<script>
+			setInterval(function () {
+				var c = window.S8N13257_CONTROL;
+				document.getElementById('out').textContent = c.bare
+					? 'bare 模式：不記錄'
+					: c.events.map(function (e) { return e.t + 'ms ' + e.type + ' ' + JSON.stringify(e.data).replace(/"([A-Za-z0-9]{4})[A-Za-z0-9]{6}"/g, '"$1…"'); }).join('\n');
+			}, 500);
+		</script>
+	</body>
+</html>
